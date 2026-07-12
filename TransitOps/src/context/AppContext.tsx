@@ -11,6 +11,17 @@ export interface User {
   name: string;
 }
 
+export interface UserAccount {
+  id: string;
+  name: string;
+  email: string;
+  password: string; // NOTE: plaintext for demo purposes only — a real backend would hash this
+  role: User['role'];
+  status: 'Pending' | 'Approved' | 'Rejected';
+  requestedAt: string;
+  decidedAt?: string;
+}
+
 export interface Vehicle {
   id: string; // Registration Plate (Unique)
   name: string;
@@ -89,7 +100,12 @@ interface AppContextType {
   fuelLogs: FuelLog[];
   expenses: Expense[];
   notifications: AppNotification[];
-  login: (email: string, role: User['role']) => boolean;
+  userAccounts: UserAccount[];
+  registerAccount: (name: string, email: string, password: string, role: Exclude<User['role'], 'Fleet Manager'>) => { success: boolean; message: string };
+  loginWithCredentials: (email: string, password: string) => { success: boolean; message: string; role?: User['role'] };
+  approveAccount: (id: string) => void;
+  rejectAccount: (id: string) => void;
+  revokeAccount: (id: string) => void;
   logout: () => void;
   // Vehicles
   addVehicle: (vehicle: Vehicle) => { success: boolean; message: string };
@@ -220,6 +236,21 @@ const INITIAL_NOTIFICATIONS: AppNotification[] = [
   { id: 'NTF-3', type: 'Info', message: '🔵 System booted successfully with 10 vehicles, 8 drivers, and active routes.', timestamp: new Date(Date.now() - 3600000 * 8).toISOString() }
 ];
 
+// Reserved Fleet Manager (admin) account — deliberately NOT reachable via public signup.
+// Only the person who owns these credentials can access the Fleet Manager role.
+const INITIAL_ACCOUNTS: UserAccount[] = [
+  {
+    id: 'ACC-ADMIN-001',
+    name: 'Yash Patil',
+    email: 'superadmin@transitops.internal',
+    password: 'TransitOps#2026',
+    role: 'Fleet Manager',
+    status: 'Approved',
+    requestedAt: new Date(Date.now() - 3600000 * 24 * 30).toISOString(),
+    decidedAt: new Date(Date.now() - 3600000 * 24 * 30).toISOString()
+  }
+];
+
 // ==========================================
 // CONTEXT PROVIDER
 // ==========================================
@@ -266,6 +297,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     return saved ? JSON.parse(saved) : INITIAL_NOTIFICATIONS;
   });
 
+  const [userAccounts, setUserAccounts] = useState<UserAccount[]>(() => {
+    const saved = localStorage.getItem('transitops_accounts');
+    return saved ? JSON.parse(saved) : INITIAL_ACCOUNTS;
+  });
+
   // Sync to LocalStorage
   useEffect(() => {
     localStorage.setItem('transitops_user', currentUser ? JSON.stringify(currentUser) : '');
@@ -298,6 +334,56 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   useEffect(() => {
     localStorage.setItem('transitops_notifications', JSON.stringify(notifications));
   }, [notifications]);
+
+  useEffect(() => {
+    localStorage.setItem('transitops_accounts', JSON.stringify(userAccounts));
+  }, [userAccounts]);
+
+  // ==========================================
+  // CROSS-TAB SYNC
+  // Keeps state in sync across multiple open browser tabs/windows.
+  // The 'storage' event only fires in OTHER tabs than the one that wrote
+  // the change — exactly what we need so Fleet Manager's tab picks up a
+  // Driver's signup happening in a different window, without a refresh.
+  // ==========================================
+  useEffect(() => {
+    const handleStorageChange = (e: StorageEvent) => {
+      if (!e.key || e.newValue === null) return;
+      try {
+        switch (e.key) {
+          case 'transitops_accounts':
+            setUserAccounts(JSON.parse(e.newValue));
+            break;
+          case 'transitops_notifications':
+            setNotifications(JSON.parse(e.newValue));
+            break;
+          case 'transitops_vehicles':
+            setVehicles(JSON.parse(e.newValue));
+            break;
+          case 'transitops_drivers':
+            setDrivers(JSON.parse(e.newValue));
+            break;
+          case 'transitops_trips':
+            setTrips(JSON.parse(e.newValue));
+            break;
+          case 'transitops_maintenance':
+            setMaintenanceLogs(JSON.parse(e.newValue));
+            break;
+          case 'transitops_fuel':
+            setFuelLogs(JSON.parse(e.newValue));
+            break;
+          case 'transitops_expenses':
+            setExpenses(JSON.parse(e.newValue));
+            break;
+        }
+      } catch {
+        // Ignore malformed payloads from other tabs
+      }
+    };
+
+    window.addEventListener('storage', handleStorageChange);
+    return () => window.removeEventListener('storage', handleStorageChange);
+  }, []);
 
   // Trigger alert check on load
   useEffect(() => {
@@ -375,23 +461,51 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   // BUSINESS OPERATIONS & EVENT LIFECYCLES
   // ==========================================
 
-  const login = (email: string, role: User['role']): boolean => {
-    // Demo Login: Simple matching or set user directly
-    const nameMap: Record<User['role'], string> = {
-      'Fleet Manager': 'Yash Patil (Fleet Mgr)',
-      'Driver': 'Alex Fernandes (Driver)',
-      'Safety Officer': 'Priya Shah (Safety Officer)',
-      'Financial Analyst': 'Rahul Deshmukh (Fin Analyst)'
-    };
-    
-    const userObj: User = {
-      email,
+  // =================================================================
+  // EVENT: ACCESS REQUEST SUBMITTED (Sign Up)
+  // =================================================================
+  const registerAccount = (name: string, email: string, password: string, role: Exclude<User['role'], 'Fleet Manager'>) => {
+    const normalizedEmail = email.trim().toLowerCase();
+    const exists = userAccounts.some(a => a.email.toLowerCase() === normalizedEmail);
+    if (exists) {
+      return { success: false, message: 'An account with this email already exists.' };
+    }
+
+    const newAccount: UserAccount = {
+      id: `ACC-${Date.now()}`,
+      name: name.trim(),
+      email: normalizedEmail,
+      password,
       role,
-      name: nameMap[role]
+      status: 'Pending',
+      requestedAt: new Date().toISOString()
     };
+
+    setUserAccounts(prev => [...prev, newAccount]);
+    pushNotification('Warning', `🟡 [ACCESS REQUEST] ${newAccount.name} (${role}) requested login access and is awaiting your approval.`);
+    return { success: true, message: 'Account request submitted. Please wait for Fleet Manager approval before signing in.' };
+  };
+
+  const loginWithCredentials = (email: string, password: string) => {
+    const normalizedEmail = email.trim().toLowerCase();
+    const account = userAccounts.find(a => a.email.toLowerCase() === normalizedEmail);
+
+    if (!account || account.password !== password) {
+      return { success: false, message: 'Invalid email or password.' };
+    }
+
+    if (account.status === 'Pending') {
+      return { success: false, message: 'Your access request is still pending Fleet Manager approval.' };
+    }
+
+    if (account.status === 'Rejected') {
+      return { success: false, message: 'Your access request was denied by the Fleet Manager. Contact your administrator.' };
+    }
+
+    const userObj: User = { email: account.email, role: account.role, name: account.name };
     setCurrentUser(userObj);
-    pushNotification('Info', `🔵 User ${userObj.name} logged in as ${role}.`);
-    return true;
+    pushNotification('Info', `🔵 User ${userObj.name} logged in as ${account.role}.`);
+    return { success: true, message: 'Login successful', role: account.role };
   };
 
   const logout = () => {
@@ -399,6 +513,30 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       pushNotification('Info', `🔵 User ${currentUser.name} logged out.`);
     }
     setCurrentUser(null);
+  };
+
+  // =================================================================
+  // EVENTS: FLEET MANAGER APPROVAL DECISIONS
+  // =================================================================
+  const approveAccount = (id: string) => {
+    const acc = userAccounts.find(a => a.id === id);
+    if (!acc) return;
+    setUserAccounts(prev => prev.map(a => a.id === id ? { ...a, status: 'Approved', decidedAt: new Date().toISOString() } : a));
+    pushNotification('Success', `🟢 [ACCESS GRANTED] ${acc.name} (${acc.role}) can now log in to TransitOps.`);
+  };
+
+  const rejectAccount = (id: string) => {
+    const acc = userAccounts.find(a => a.id === id);
+    if (!acc) return;
+    setUserAccounts(prev => prev.map(a => a.id === id ? { ...a, status: 'Rejected', decidedAt: new Date().toISOString() } : a));
+    pushNotification('Warning', `🔴 [ACCESS DENIED] ${acc.name}'s (${acc.role}) request was declined.`);
+  };
+
+  const revokeAccount = (id: string) => {
+    const acc = userAccounts.find(a => a.id === id);
+    if (!acc) return;
+    setUserAccounts(prev => prev.map(a => a.id === id ? { ...a, status: 'Rejected', decidedAt: new Date().toISOString() } : a));
+    pushNotification('Warning', `🔴 [ACCESS REVOKED] ${acc.name}'s (${acc.role}) login access has been revoked.`);
   };
 
   const addVehicle = (vehicle: Vehicle) => {
@@ -831,7 +969,12 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       fuelLogs,
       expenses,
       notifications,
-      login,
+      userAccounts,
+      registerAccount,
+      loginWithCredentials,
+      approveAccount,
+      rejectAccount,
+      revokeAccount,
       logout,
       addVehicle,
       updateVehicle,

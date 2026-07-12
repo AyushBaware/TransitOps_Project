@@ -12,11 +12,12 @@ import {
   LogOut, 
   Sun, 
   Moon,
-  ShieldCheck
+  ShieldCheck,
+  UserCheck
 } from 'lucide-react';
 
 export const Sidebar: React.FC = () => {
-  const { currentUser, logout, login } = useApp();
+  const { currentUser, logout, userAccounts } = useApp();
   const navigate = useNavigate();
 
   // Dark Mode Toggle helper
@@ -42,23 +43,6 @@ export const Sidebar: React.FC = () => {
     setDarkMode(!darkMode);
   };
 
-  const handleRoleChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
-    const role = e.target.value as any;
-    if (currentUser) {
-      login(currentUser.email, role);
-      // Redirect based on role to prevent stranded routes
-      if (role === 'Driver') {
-        navigate('/trips');
-      } else if (role === 'Safety Officer') {
-        navigate('/drivers');
-      } else if (role === 'Financial Analyst') {
-        navigate('/reports');
-      } else {
-        navigate('/');
-      }
-    }
-  };
-
   const handleLogout = () => {
     logout();
     navigate('/login');
@@ -67,6 +51,7 @@ export const Sidebar: React.FC = () => {
   if (!currentUser) return null;
 
   const role = currentUser.role;
+  const pendingCount = userAccounts.filter(a => a.status === 'Pending').length;
 
   // RBAC Access Control lists for sidebar links
   const links = [
@@ -77,6 +62,7 @@ export const Sidebar: React.FC = () => {
     { to: '/maintenance', label: 'Maintenance', icon: Wrench, roles: ['Fleet Manager'] },
     { to: '/expenses', label: 'Fuel & Expenses', icon: Receipt, roles: ['Fleet Manager', 'Driver', 'Financial Analyst'] },
     { to: '/reports', label: 'Reports & ROI', icon: FileBarChart, roles: ['Fleet Manager', 'Financial Analyst'] },
+    { to: '/access-control', label: 'Access Control', icon: UserCheck, roles: ['Fleet Manager'] },
   ];
 
   const allowedLinks = links.filter(link => link.roles.includes(role));
@@ -110,26 +96,7 @@ export const Sidebar: React.FC = () => {
             </div>
           </div>
 
-          {/* Quick Demo Switcher */}
-          <div className="pt-2 border-t border-slate-200 dark:border-slate-800">
-            <label className="text-[10px] text-slate-500 dark:text-slate-400 font-semibold uppercase tracking-wider block mb-1">
-              Demo Switch Role
-            </label>
-            <div className="relative">
-              <select
-                id="demo-role-selector"
-                value={role}
-                onChange={handleRoleChange}
-                className="w-full bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 text-slate-800 dark:text-slate-200 rounded px-2 py-1 text-xs font-medium focus:ring-1 focus:ring-blue-500 focus:border-blue-500 cursor-pointer"
-              >
-                <option value="Fleet Manager">Fleet Manager</option>
-                <option value="Driver">Driver</option>
-                <option value="Safety Officer">Safety Officer</option>
-                <option value="Financial Analyst">Financial Analyst</option>
-              </select>
-            </div>
           </div>
-        </div>
 
         {/* Navigation Section */}
         <div className="px-4">
@@ -153,6 +120,11 @@ export const Sidebar: React.FC = () => {
                 >
                   <Icon className="h-4.5 w-4.5" />
                   {link.label}
+                  {link.to === '/access-control' && pendingCount > 0 && (
+                    <span className="ml-auto bg-red-500 text-white text-[10px] font-bold rounded-full h-5 w-5 flex items-center justify-center">
+                      {pendingCount}
+                    </span>
+                  )}
                 </NavLink>
               );
             })}
